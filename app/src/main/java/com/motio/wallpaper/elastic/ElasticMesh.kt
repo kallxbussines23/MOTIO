@@ -40,12 +40,18 @@ class ElasticMesh(
     private var dragStartY = 0f
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
+    private var releasedDragX = 0f
+    private var releasedDragY = 0f
+    private var dragReleaseNanos = 0L
 
     fun beginDrag(x: Float, y: Float) {
         dragStartX = x
         dragStartY = y
         dragOffsetX = 0f
         dragOffsetY = 0f
+        releasedDragX = 0f
+        releasedDragY = 0f
+        dragReleaseNanos = 0L
         dragActive = true
     }
 
@@ -56,7 +62,10 @@ class ElasticMesh(
     }
 
     fun endDrag() {
-        // Returning the drag target to zero lets the spring create the rebound.
+        if (!dragActive) return
+        releasedDragX = dragOffsetX
+        releasedDragY = dragOffsetY
+        dragReleaseNanos = System.nanoTime()
         dragActive = false
     }
 
@@ -70,6 +79,9 @@ class ElasticMesh(
         dragActive = false
         dragOffsetX = 0f
         dragOffsetY = 0f
+        releasedDragX = 0f
+        releasedDragY = 0f
+        dragReleaseNanos = 0L
         displacementX.fill(0f)
         displacementY.fill(0f)
         velocityX.fill(0f)
@@ -150,17 +162,8 @@ class ElasticMesh(
         while (vertex < vertexCount) {
             val amount = influence[vertex]
             val localLimit = maxTravel * amount * 1.8f
-            val dragDistanceX = rest[vertex * 2] - dragStartX
-            val dragDistanceY = rest[vertex * 2 + 1] - dragStartY
-            val dragRadius = minOf(width, height) * 0.24f
-            val dragDistance = sqrt(dragDistanceX * dragDistanceX + dragDistanceY * dragDistanceY)
-            val dragFalloff = if (dragActive) exp(-(dragDistance / dragRadius) * (dragDistance / dragRadius) * 2.2f) else 0f
-            val dragWeight = amount * dragFalloff
-            val maxDragOffset = maxTravel * 1.05f
-            val boundedDragX = dragOffsetX.coerceIn(-maxDragOffset, maxDragOffset)
-            val boundedDragY = dragOffsetY.coerceIn(-maxDragOffset, maxDragOffset)
-            val targetX = (safeTiltX + safeShakeX * 0.78f) * maxTravel * amount + boundedDragX * dragWeight
-            val targetY = (safeTiltY + safeShakeY * 0.78f) * maxTravel * amount + boundedDragY * dragWeight
+            val targetX = (safeTiltX + safeShakeX * 0.78f) * maxTravel * amount
+            val targetY = (safeTiltY + safeShakeY * 0.78f) * maxTravel * amount
 
             repeat(steps) {
                 val forceX = (targetX - displacementX[vertex]) * stiffness -
@@ -177,8 +180,40 @@ class ElasticMesh(
                 displacementY[vertex] = displacementY[vertex].coerceIn(-localLimit, localLimit)
             }
 
-            vertices[vertex * 2] = rest[vertex * 2] + displacementX[vertex]
-            vertices[vertex * 2 + 1] = rest[vertex * 2 + 1] + displacementY[vertex]
+            val dx = rest[vertex * 2] - dragStartX
+            val dy = rest[vertex * 2 + 1] - dragStartY
+            val dragRadius = minOf(width, height) * 0.24f
+            val normalizedDragDistance = sqrt(dx * dx + dy * dy) / dragRadius
+            val dragFalloff = exp(-normalizedDragDistance * normalizedDragDistance * 2.2f)
+            val brushWeight = amount * dragFalloff
+            val maxDragOffset = minOf(width, height) * 0.16f
+            val directX: Float
+            val directY: Float
+            if (dragActive) {
+                // Apply the pointer delta directly: no spring lag while the finger moves.
+                directX = dragOffsetX.coerceIn(-maxDragOffset, maxDragOffset) * brushWeight
+                directY = dragOffsetY.coerceIn(-maxDragOffset, maxDragOffset) * brushWeight
+            } else if (dragReleaseNanos != 0L) {
+                // On release, decay with a short damped oscillation for an elastic bounce.
+                val age = (now - dragReleaseNanos) / 1_000_000_000f
+                if (age < 0.72f) {
+                    val decay = exp(-age * 6.2f)
+                    val bounce = kotlin.math.cos(age * 19f) * decay
+                    directX = releasedDragX * brushWeight * bounce
+                    directY = releasedDragY * brushWeight * bounce
+                } else {
+                    directX = 0f
+                    directY = 0f
+                    dragReleaseNanos = 0L
+                    releasedDragX = 0f
+                    releasedDragY = 0f
+                }
+            } else {
+                directX = 0f
+                directY = 0f
+            }
+            vertices[vertex * 2] = rest[vertex * 2] + displacementX[vertex] + directX
+            vertices[vertex * 2 + 1] = rest[vertex * 2 + 1] + displacementY[vertex] + directY
             vertex++
         }
 
