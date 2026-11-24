@@ -147,21 +147,23 @@ class MainActivity : ComponentActivity() {
         modifier: Modifier = Modifier
     ) {
         val bitmap = remember(imagePath) { android.graphics.BitmapFactory.decodeFile(imagePath) }
+        val latestOnAddBrush by rememberUpdatedState(onAddBrush)
+        val latestOnStrokeFinished by rememberUpdatedState(onStrokeFinished)
         Canvas(
             modifier.pointerInput(imagePath, brushRadius) {
                 var lastPoint: Offset? = null
                 detectDragGestures(
                     onDragStart = { point ->
                         lastPoint = point
-                        onAddBrush(Offset(point.x / size.width, point.y / size.height))
+                        latestOnAddBrush(Offset(point.x / size.width, point.y / size.height))
                     },
                     onDragEnd = {
                         lastPoint = null
-                        onStrokeFinished()
+                        latestOnStrokeFinished()
                     },
                     onDragCancel = {
                         lastPoint = null
-                        onStrokeFinished()
+                        latestOnStrokeFinished()
                     },
                     onDrag = { change, _ ->
                         change.consume()
@@ -169,7 +171,7 @@ class MainActivity : ComponentActivity() {
                         val previous = lastPoint
                         val minSpacing = (brushRadius * minOf(size.width, size.height) * .42f).coerceAtLeast(8f)
                         if (previous == null || hypot(point.x - previous.x, point.y - previous.y) >= minSpacing) {
-                            onAddBrush(Offset(point.x / size.width, point.y / size.height))
+                            latestOnAddBrush(Offset(point.x / size.width, point.y / size.height))
                             lastPoint = point
                         }
                     }
