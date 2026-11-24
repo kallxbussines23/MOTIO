@@ -1,29 +1,108 @@
 package com.motio.wallpaper.motion
+
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-class TiltController(context: Context, private val onTilt: (Float, Float) -> Unit) : SensorEventListener {
+
+/**
+ * Converts absolute device orientation into a neutral-relative tilt signal.
+ * The first sensor sample after start becomes the neutral position, preventing
+ * a wallpaper from jumping when the phone is already being held at an angle.
+ */
+class TiltController(
+    context: Context,
+    private val onTilt: (Float, Float) -> Unit
+) : SensorEventListener {
     private val manager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val rotation = manager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-    private val accel = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-    private val matrix = FloatArray(9); private val orientation = FloatArray(3)
-    private var smoothX = 0f; private var smoothY = 0f
-    fun start() { (rotation ?: accel)?.let { manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) } }
-    fun stop() = manager.unregisterListener(this)
+    private val accelerometer = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    private val matrix = FloatArray(9)
+    private val orientation = FloatArray(3)
+
+    private var baselineRoll = 0f
+    private var baselinePitch = 0f
+    private var hasBaseline = false
+    private var smoothX = 0f
+    private var smoothY = 0f
+    private var lastTimestamp = 0L
+
+    fun start() {
+        hasBaseline = false
+        smoothX = 0f
+        smoothY = 0f
+        lastTimestamp = 0L
+        val sensor = rotation ?: accelerometer
+        if (sensor != null) manager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
+        onTilt(0f, 0f)
+    }
+
+    fun stop() {
+        manager.unregisterListener(this)
+    }
+
     override fun onSensorChanged(event: SensorEvent) {
-        val x: Float; val y: Float
+        val roll: Float
+        val pitch: Float
+
         if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
             SensorManager.getRotationMatrixFromVector(matrix, event.values)
             SensorManager.getOrientation(matrix, orientation)
-            x = orientation[2] / .65f; y = orientation[1] / .65f
-        } else { x = event.values[0] / SensorManager.GRAVITY_EARTH; y = event.values[1] / SensorManager.GRAVITY_EARTH }
-        smoothX += (min(1f, max(-1f, x)) - smoothX) * .18f
-        smoothY += (min(1f, max(-1f, y)) - smoothY) * .18f
+            pitch = orientation[1]
+            roll = orientation[2]
+        } else {
+            // Accelerometer fallback: gravity direction only, not raw acceleration spikes.
+            val norm = kotlin.math.sqrt(
+                event.values[0] * event.values[0] +
+                event.values[1] * event.values[1] +
+                event.values[2] * event.values[2]
+            ).coerceAtLeast(0.001f)
+            roll = kotlin.math.atan2(event.values[0], event.values[2])
+            pitch = kotlin.math.asin((event.values[1] / norm).coerceIn(-1f, 1f))
+        }
+
+        if (!hasBaseline) {
+            baselineRoll = roll
+            baselinePitch = pitch
+            hasBaseline = true
+            lastTimestamp = event.timestamp
+            return
+        }
+
+        val deltaRoll = wrapAngle(roll - baselineRoll)
+        val deltaPitch = wrapAngle(pitch - baselinePitch)
+
+        // Ignore tiny hand tremor and map a comfortable tilt range to [-1, 1].
+        val targetX = normalizeTilt(deltaRoll)
+        val targetY = normalizeTilt(deltaPitch)
+
+        val elapsed = if (lastTimestamp == 0L) 1f / 60f
+            else ((event.timestamp - lastTimestamp) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+        lastTimestamp = event.timestamp
+        val alpha = (1f - kotlin.math.exp(-elapsed * 10f)).coerceIn(0.03f, 0.45f)
+        smoothX += (targetX - smoothX) * alpha
+        smoothY += (targetY - smoothY) * alpha
         onTilt(smoothX, smoothY)
     }
+
+    private fun normalizeTilt(angle: Float): Float {
+        val deadZone = 0.035f
+        val magnitude = abs(angle)
+        if (magnitude <= deadZone) return 0f
+        val usable = (magnitude - deadZone) / (0.48f - deadZone)
+        return (usable.coerceIn(0f, 1f) * if (angle < 0f) -1f else 1f)
+    }
+
+    private fun wrapAngle(value: Float): Float {
+        var result = value
+        while (result > Math.PI) result -= (2f * Math.PI.toFloat())
+        while (result < -Math.PI) result += (2f * Math.PI.toFloat())
+        return result
+    }
+
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 }
