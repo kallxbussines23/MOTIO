@@ -6,13 +6,11 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import kotlin.math.abs
-import kotlin.math.max
-import kotlin.math.min
+import kotlin.math.exp
 
 /**
- * Converts absolute device orientation into a neutral-relative tilt signal.
- * The first sensor sample after start becomes the neutral position, preventing
- * a wallpaper from jumping when the phone is already being held at an angle.
+ * Converts device orientation into a neutral-relative, gently filtered tilt signal.
+ * The first sample after start is neutral, so the wallpaper does not jump on entry.
  */
 class TiltController(
     context: Context,
@@ -55,11 +53,10 @@ class TiltController(
             pitch = orientation[1]
             roll = orientation[2]
         } else {
-            // Accelerometer fallback: gravity direction only, not raw acceleration spikes.
             val norm = kotlin.math.sqrt(
                 event.values[0] * event.values[0] +
-                event.values[1] * event.values[1] +
-                event.values[2] * event.values[2]
+                    event.values[1] * event.values[1] +
+                    event.values[2] * event.values[2]
             ).coerceAtLeast(0.001f)
             roll = kotlin.math.atan2(event.values[0], event.values[2])
             pitch = kotlin.math.asin((event.values[1] / norm).coerceIn(-1f, 1f))
@@ -76,14 +73,17 @@ class TiltController(
         val deltaRoll = wrapAngle(roll - baselineRoll)
         val deltaPitch = wrapAngle(pitch - baselinePitch)
 
-        // Ignore tiny hand tremor and map a comfortable tilt range to [-1, 1].
         val targetX = normalizeTilt(deltaRoll)
-        val targetY = normalizeTilt(deltaPitch)
+        // Android's pitch sign is opposite to the visual "top edge moves down"
+        // direction expected by the wallpaper canvas. Invert it here.
+        val targetY = -normalizeTilt(deltaPitch)
 
         val elapsed = if (lastTimestamp == 0L) 1f / 60f
             else ((event.timestamp - lastTimestamp) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
         lastTimestamp = event.timestamp
-        val alpha = (1f - kotlin.math.exp(-elapsed * 10f)).coerceIn(0.03f, 0.45f)
+
+        // A softer low-pass removes sensor jitter without making the wallpaper lag.
+        val alpha = (1f - exp(-elapsed * 8f)).coerceIn(0.02f, 0.34f)
         smoothX += (targetX - smoothX) * alpha
         smoothY += (targetY - smoothY) * alpha
         onTilt(smoothX, smoothY)
@@ -94,7 +94,7 @@ class TiltController(
         val magnitude = abs(angle)
         if (magnitude <= deadZone) return 0f
         val usable = (magnitude - deadZone) / (0.48f - deadZone)
-        return (usable.coerceIn(0f, 1f) * if (angle < 0f) -1f else 1f)
+        return usable.coerceIn(0f, 1f) * if (angle < 0f) -1f else 1f
     }
 
     private fun wrapAngle(value: Float): Float {
