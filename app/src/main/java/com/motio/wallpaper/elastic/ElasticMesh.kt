@@ -163,7 +163,10 @@ class ElasticMesh(
                 val band = (distance - waveRadius) / waveWidth
                 val envelope = exp(-band * band * 1.8f)
                 val wave = kotlin.math.sin((distance / minDimension * 42f) - rippleAge * 17f)
-                val offset = amplitude * envelope * wave
+                // Restrict the ripple strictly to brushed vertices; outside the brush
+                // influence the original image geometry remains untouched.
+                val brushMask = influence[i]
+                val offset = amplitude * envelope * wave * brushMask
                 val safeDistance = distance.coerceAtLeast(1f)
                 val limit = minDimension * 0.012f
                 val ox = (dx / safeDistance * offset).coerceIn(-limit, limit)
