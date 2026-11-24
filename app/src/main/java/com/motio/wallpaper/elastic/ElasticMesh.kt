@@ -9,9 +9,9 @@ import kotlin.math.exp
 import kotlin.math.sqrt
 
 /**
- * Cached brush influence + critically damped spring mesh.
- * Brush falloff is recalculated only when the brush layout or surface changes,
- * keeping the animation frame lightweight.
+ * Cached brush influence + softly underdamped spring mesh.
+ * A controlled rebound gives the brushed image a lively elastic feel while
+ * displacement limits and smooth falloff protect the original picture.
  */
 class ElasticMesh(
     private val columns: Int = 40,
@@ -93,7 +93,7 @@ class ElasticMesh(
             cachedBrushHash = brushHash
         }
 
-        val maxTravel = minOf(width, height) * 0.045f * globalStrength.coerceIn(0.1f, 1.5f)
+        val maxTravel = minOf(width, height) * 0.038f * globalStrength.coerceIn(0.1f, 1.5f)
         val safeTiltX = tiltX.coerceIn(-1f, 1f)
         val safeTiltY = tiltY.coerceIn(-1f, 1f)
         val safeShakeX = shakeX.coerceIn(-1f, 1f)
@@ -103,15 +103,17 @@ class ElasticMesh(
         val frameDt = if (lastFrameNanos == 0L) 1f / 60f
             else ((now - lastFrameNanos) / 1_000_000_000f).coerceIn(1f / 240f, 0.05f)
         lastFrameNanos = now
-        val steps = ceil(frameDt / (1f / 120f)).toInt().coerceIn(1, 8)
+        // Small fixed substeps avoid spring instability when a frame is delayed.
+        val steps = ceil(frameDt / (1f / 180f)).toInt().coerceIn(1, 10)
         val dt = frameDt / steps
 
-        // Near-critical damping: quick response without harsh overshoot or jitter.
-        val stiffness = 64f
-        val damping = 16f
+        // Slightly underdamped: visible rebound, but no long uncontrolled wobble.
+        val stiffness = 78f
+        val damping = 12.7f
         var vertex = 0
         while (vertex < vertexCount) {
             val amount = influence[vertex]
+            val localLimit = maxTravel * amount * 1.22f
             val targetX = (safeTiltX + safeShakeX * 0.78f) * maxTravel * amount
             val targetY = (safeTiltY + safeShakeY * 0.78f) * maxTravel * amount
 
@@ -124,6 +126,10 @@ class ElasticMesh(
                 velocityY[vertex] += forceY * dt
                 displacementX[vertex] += velocityX[vertex] * dt
                 displacementY[vertex] += velocityY[vertex] * dt
+
+                // Limit overshoot to preserve the image and prevent mesh folding.
+                displacementX[vertex] = displacementX[vertex].coerceIn(-localLimit, localLimit)
+                displacementY[vertex] = displacementY[vertex].coerceIn(-localLimit, localLimit)
             }
 
             vertices[vertex * 2] = rest[vertex * 2] + displacementX[vertex]
@@ -148,7 +154,7 @@ class ElasticMesh(
                 val dy = py - brush.y * height
                 val normalized = sqrt(dx * dx + dy * dy) / radius
                 if (normalized < 2.2f) {
-                    val falloff = exp(-normalized * normalized * 1.65f)
+                    val falloff = exp(-normalized * normalized * 1.45f)
                     val weighted = (falloff * brush.strength).coerceIn(0f, 1f)
                     combined = 1f - (1f - combined) * (1f - weighted)
                 }
