@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.service.wallpaper.WallpaperService
 import android.view.SurfaceHolder
+import android.view.MotionEvent
 import com.motio.wallpaper.data.MotioConfig
 import com.motio.wallpaper.data.MotioStore
 import com.motio.wallpaper.elastic.ElasticMesh
@@ -30,13 +31,13 @@ class MotioWallpaperService : WallpaperService() {
         private val drawTask = object : Runnable {
             override fun run() {
                 drawFrame()
-                if (visible) handler.postDelayed(this, 16L)
+                if (visible) handler.postDelayed(this, 8L)
             }
         }
 
         override fun onCreate(surfaceHolder: SurfaceHolder) {
             super.onCreate(surfaceHolder)
-            setTouchEventsEnabled(false)
+            setTouchEventsEnabled(true)
             loadWallpaper()
             tilt = TiltController(this@MotioWallpaperService) { x, y, sx, sy ->
                 tiltX = x
@@ -68,6 +69,20 @@ class MotioWallpaperService : WallpaperService() {
                 shakeX = 0f
                 shakeY = 0f
             }
+        }
+
+        override fun onTouchEvent(event: MotionEvent) {
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                val width = surfaceHolder.surfaceFrame.width().coerceAtLeast(1)
+                val height = surfaceHolder.surfaceFrame.height().coerceAtLeast(1)
+                mesh.triggerRipple(event.x / width.toFloat(), event.y / height.toFloat())
+                // Redraw immediately so the ripple begins at the touch point.
+                if (visible) {
+                    handler.removeCallbacks(drawTask)
+                    handler.post(drawTask)
+                }
+            }
+            super.onTouchEvent(event)
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
