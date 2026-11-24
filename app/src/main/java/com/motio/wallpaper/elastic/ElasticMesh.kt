@@ -31,7 +31,16 @@ class ElasticMesh(
     private var cachedBrushHash = 0
     private var cachedWidth = -1
     private var cachedHeight = -1
+    private var rippleX = 0f
+    private var rippleY = 0f
+    private var rippleStartedNanos = 0L
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+
+    fun triggerRipple(x: Float, y: Float) {
+        rippleX = x.coerceIn(0f, 1f)
+        rippleY = y.coerceIn(0f, 1f)
+        rippleStartedNanos = System.nanoTime()
+    }
 
     fun reset() {
         displacementX.fill(0f)
@@ -135,6 +144,36 @@ class ElasticMesh(
             vertices[vertex * 2] = rest[vertex * 2] + displacementX[vertex]
             vertices[vertex * 2 + 1] = rest[vertex * 2 + 1] + displacementY[vertex]
             vertex++
+        }
+
+        // A tap creates a traveling radial wave. It is a temporary vertex offset;
+        // the source bitmap is never modified.
+        val rippleAge = if (rippleStartedNanos == 0L) Float.POSITIVE_INFINITY
+            else (now - rippleStartedNanos) / 1_000_000_000f
+        if (rippleAge in 0f..1.25f) {
+            val minDimension = minOf(width, height).toFloat()
+            val waveRadius = rippleAge * minDimension * 1.35f
+            val waveWidth = minDimension * 0.105f
+            val amplitude = minDimension * 0.009f * exp(-rippleAge * 2.7f)
+            var i = 0
+            while (i < vertexCount) {
+                val dx = rest[i * 2] - rippleX * width
+                val dy = rest[i * 2 + 1] - rippleY * height
+                val distance = sqrt(dx * dx + dy * dy)
+                val band = (distance - waveRadius) / waveWidth
+                val envelope = exp(-band * band * 1.8f)
+                val wave = kotlin.math.sin((distance / minDimension * 42f) - rippleAge * 17f)
+                val offset = amplitude * envelope * wave
+                val safeDistance = distance.coerceAtLeast(1f)
+                val limit = minDimension * 0.012f
+                val ox = (dx / safeDistance * offset).coerceIn(-limit, limit)
+                val oy = (dy / safeDistance * offset).coerceIn(-limit, limit)
+                vertices[i * 2] += ox
+                vertices[i * 2 + 1] += oy
+                i++
+            }
+        } else if (rippleAge > 1.25f) {
+            rippleStartedNanos = 0L
         }
 
         canvas.drawBitmapMesh(bitmap, columns, rows, vertices, 0, null, 0, paint)
