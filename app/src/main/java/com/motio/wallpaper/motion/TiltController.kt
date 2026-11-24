@@ -7,18 +7,20 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.sqrt
 
 /**
- * Converts device orientation into a neutral-relative, gently filtered tilt signal.
- * The first sample after start is neutral, so the wallpaper does not jump on entry.
+ * Reads orientation for tilt and linear acceleration for quick motion impulses.
+ * Both streams are filtered independently to keep shake responsive without jitter.
  */
 class TiltController(
     context: Context,
-    private val onTilt: (Float, Float) -> Unit
+    private val onMotion: (Float, Float, Float, Float) -> Unit
 ) : SensorEventListener {
     private val manager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val rotation = manager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
     private val accelerometer = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    private val linearAcceleration = manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
     private val matrix = FloatArray(9)
     private val orientation = FloatArray(3)
 
@@ -27,16 +29,28 @@ class TiltController(
     private var hasBaseline = false
     private var smoothX = 0f
     private var smoothY = 0f
+    private var shakeX = 0f
+    private var shakeY = 0f
     private var lastTimestamp = 0L
+    private var lastShakeTimestamp = 0L
 
     fun start() {
         hasBaseline = false
         smoothX = 0f
         smoothY = 0f
+        shakeX = 0f
+        shakeY = 0f
         lastTimestamp = 0L
-        val sensor = rotation ?: accelerometer
-        if (sensor != null) manager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
-        onTilt(0f, 0f)
+        lastShakeTimestamp = 0L
+
+        val orientationSensor = rotation ?: accelerometer
+        if (orientationSensor != null) {
+            manager.registerListener(this, orientationSensor, SensorManager.SENSOR_DELAY_GAME)
+        }
+        linearAcceleration?.let {
+            manager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+        emit()
     }
 
     fun stop() {
@@ -44,16 +58,20 @@ class TiltController(
     }
 
     override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type == Sensor.TYPE_LINEAR_ACCELERATION) {
+            updateShake(event)
+            return
+        }
+
         val roll: Float
         val pitch: Float
-
         if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
             SensorManager.getRotationMatrixFromVector(matrix, event.values)
             SensorManager.getOrientation(matrix, orientation)
             pitch = orientation[1]
             roll = orientation[2]
         } else {
-            val norm = kotlin.math.sqrt(
+            val norm = sqrt(
                 event.values[0] * event.values[0] +
                     event.values[1] * event.values[1] +
                     event.values[2] * event.values[2]
@@ -72,25 +90,46 @@ class TiltController(
 
         val deltaRoll = wrapAngle(roll - baselineRoll)
         val deltaPitch = wrapAngle(pitch - baselinePitch)
-
         val targetX = normalizeTilt(deltaRoll)
-        // Android's pitch sign is opposite to the visual "top edge moves down"
-        // direction expected by the wallpaper canvas. Invert it here.
         val targetY = -normalizeTilt(deltaPitch)
 
         val elapsed = if (lastTimestamp == 0L) 1f / 60f
             else ((event.timestamp - lastTimestamp) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
         lastTimestamp = event.timestamp
 
-        // A softer low-pass removes sensor jitter without making the wallpaper lag.
-        val alpha = (1f - exp(-elapsed * 8f)).coerceIn(0.02f, 0.34f)
+        val alpha = (1f - exp(-elapsed * 13f)).coerceIn(0.02f, 0.48f)
         smoothX += (targetX - smoothX) * alpha
         smoothY += (targetY - smoothY) * alpha
-        onTilt(smoothX, smoothY)
+        emit()
+    }
+
+    private fun updateShake(event: SensorEvent) {
+        val elapsed = if (lastShakeTimestamp == 0L) 1f / 60f
+            else ((event.timestamp - lastShakeTimestamp) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+        lastShakeTimestamp = event.timestamp
+
+        // Linear acceleration excludes gravity. A soft threshold ignores sensor noise,
+        // while ordinary quick hand movement still produces a visible elastic response.
+        val rawX = deadband(event.values[0], 0.55f) / 8.5f
+        val rawY = -deadband(event.values[1], 0.55f) / 8.5f
+        val alpha = (1f - exp(-elapsed * 22f)).coerceIn(0.04f, 0.72f)
+        shakeX += (rawX.coerceIn(-1f, 1f) - shakeX) * alpha
+        shakeY += (rawY.coerceIn(-1f, 1f) - shakeY) * alpha
+        emit()
+    }
+
+    private fun deadband(value: Float, threshold: Float): Float {
+        val magnitude = abs(value)
+        if (magnitude <= threshold) return 0f
+        return (magnitude - threshold) * if (value < 0f) -1f else 1f
+    }
+
+    private fun emit() {
+        onMotion(smoothX, smoothY, shakeX, shakeY)
     }
 
     private fun normalizeTilt(angle: Float): Float {
-        val deadZone = 0.035f
+        val deadZone = 0.025f
         val magnitude = abs(angle)
         if (magnitude <= deadZone) return 0f
         val usable = (magnitude - deadZone) / (0.48f - deadZone)
@@ -99,8 +138,8 @@ class TiltController(
 
     private fun wrapAngle(value: Float): Float {
         var result = value
-        while (result > Math.PI) result -= (2f * Math.PI.toFloat())
-        while (result < -Math.PI) result += (2f * Math.PI.toFloat())
+        while (result > Math.PI) result -= 2f * Math.PI.toFloat()
+        while (result < -Math.PI) result += 2f * Math.PI.toFloat()
         return result
     }
 
