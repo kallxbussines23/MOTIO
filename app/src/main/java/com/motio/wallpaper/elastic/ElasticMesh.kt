@@ -9,8 +9,9 @@ import kotlin.math.exp
 import kotlin.math.sqrt
 
 /**
- * Smooth spring-based deformation. Brushed regions follow the phone's tilt
- * direction while the brush boundary stays anchored, creating a soft elastic pull.
+ * Cached brush influence + critically damped spring mesh.
+ * Brush falloff is recalculated only when the brush layout or surface changes,
+ * keeping the animation frame lightweight.
  */
 class ElasticMesh(
     private val columns: Int = 40,
@@ -20,12 +21,16 @@ class ElasticMesh(
     private val vertexCount = (columns + 1) * (rows + 1)
     private val rest = FloatArray(vertexCount * 2)
     private val vertices = FloatArray(vertexCount * 2)
+    private val influence = FloatArray(vertexCount)
     private val displacementX = FloatArray(vertexCount)
     private val displacementY = FloatArray(vertexCount)
     private val velocityX = FloatArray(vertexCount)
     private val velocityY = FloatArray(vertexCount)
     private var initialized = false
     private var lastFrameNanos = 0L
+    private var cachedBrushHash = 0
+    private var cachedWidth = -1
+    private var cachedHeight = -1
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
 
     fun reset() {
@@ -33,7 +38,11 @@ class ElasticMesh(
         displacementY.fill(0f)
         velocityX.fill(0f)
         velocityY.fill(0f)
+        influence.fill(0f)
         lastFrameNanos = 0L
+        cachedBrushHash = 0
+        cachedWidth = -1
+        cachedHeight = -1
         initialized = false
     }
 
@@ -44,6 +53,8 @@ class ElasticMesh(
         height: Int,
         tiltX: Float,
         tiltY: Float,
+        shakeX: Float,
+        shakeY: Float,
         brushes: List<BrushRegion>,
         globalStrength: Float
     ) {
@@ -55,14 +66,14 @@ class ElasticMesh(
         val left = (width - drawW) * 0.5f
         val top = (height - drawH) * 0.5f
 
-        var i = 0
+        var index = 0
         for (gy in 0..rows) {
             val ny = gy.toFloat() / rows
             for (gx in 0..columns) {
                 val nx = gx.toFloat() / columns
-                rest[i * 2] = left + nx * drawW
-                rest[i * 2 + 1] = top + ny * drawH
-                i++
+                rest[index * 2] = left + nx * drawW
+                rest[index * 2 + 1] = top + ny * drawH
+                index++
             }
         }
 
@@ -74,62 +85,76 @@ class ElasticMesh(
             initialized = true
         }
 
+        val brushHash = brushes.hashCode()
+        if (cachedWidth != width || cachedHeight != height || cachedBrushHash != brushHash) {
+            rebuildInfluence(width, height, brushes)
+            cachedWidth = width
+            cachedHeight = height
+            cachedBrushHash = brushHash
+        }
+
         val maxTravel = minOf(width, height) * 0.045f * globalStrength.coerceIn(0.1f, 1.5f)
         val safeTiltX = tiltX.coerceIn(-1f, 1f)
         val safeTiltY = tiltY.coerceIn(-1f, 1f)
+        val safeShakeX = shakeX.coerceIn(-1f, 1f)
+        val safeShakeY = shakeY.coerceIn(-1f, 1f)
 
-        // Use real frame time with small substeps so motion stays consistent
-        // on 60/90/120 Hz screens and after occasional dropped frames.
         val now = System.nanoTime()
         val frameDt = if (lastFrameNanos == 0L) 1f / 60f
             else ((now - lastFrameNanos) / 1_000_000_000f).coerceIn(1f / 240f, 0.05f)
         lastFrameNanos = now
-        val steps = ceil(frameDt / (1f / 120f)).toInt().coerceIn(1, 6)
+        val steps = ceil(frameDt / (1f / 120f)).toInt().coerceIn(1, 8)
         val dt = frameDt / steps
-        val stiffness = 58f
-        val damping = 15f
-        val minDimension = minOf(width, height).toFloat()
 
+        // Near-critical damping: quick response without harsh overshoot or jitter.
+        val stiffness = 64f
+        val damping = 16f
         var vertex = 0
-        for (gy in 0..rows) {
-            for (gx in 0..columns) {
-                val px = rest[vertex * 2]
-                val py = rest[vertex * 2 + 1]
-                var combinedInfluence = 0f
+        while (vertex < vertexCount) {
+            val amount = influence[vertex]
+            val targetX = (safeTiltX + safeShakeX * 0.78f) * maxTravel * amount
+            val targetY = (safeTiltY + safeShakeY * 0.78f) * maxTravel * amount
 
-                for (brush in brushes) {
-                    val radius = (brush.radius * minDimension).coerceAtLeast(1f)
-                    val dx = px - brush.x * width
-                    val dy = py - brush.y * height
-                    val normalized = sqrt(dx * dx + dy * dy) / radius
-                    if (normalized < 2.2f) {
-                        val falloff = exp(-normalized * normalized * 1.65f)
-                        val weighted = (falloff * brush.strength).coerceIn(0f, 1f)
-                        combinedInfluence = 1f - (1f - combinedInfluence) * (1f - weighted)
-                    }
-                }
-
-                // The brush center follows the tilt; its outer edge remains anchored.
-                val targetX = safeTiltX * maxTravel * combinedInfluence
-                val targetY = safeTiltY * maxTravel * combinedInfluence
-
-                repeat(steps) {
-                    val forceX = (targetX - displacementX[vertex]) * stiffness -
-                        velocityX[vertex] * damping
-                    val forceY = (targetY - displacementY[vertex]) * stiffness -
-                        velocityY[vertex] * damping
-                    velocityX[vertex] += forceX * dt
-                    velocityY[vertex] += forceY * dt
-                    displacementX[vertex] += velocityX[vertex] * dt
-                    displacementY[vertex] += velocityY[vertex] * dt
-                }
-
-                vertices[vertex * 2] = px + displacementX[vertex]
-                vertices[vertex * 2 + 1] = py + displacementY[vertex]
-                vertex++
+            repeat(steps) {
+                val forceX = (targetX - displacementX[vertex]) * stiffness -
+                    velocityX[vertex] * damping
+                val forceY = (targetY - displacementY[vertex]) * stiffness -
+                    velocityY[vertex] * damping
+                velocityX[vertex] += forceX * dt
+                velocityY[vertex] += forceY * dt
+                displacementX[vertex] += velocityX[vertex] * dt
+                displacementY[vertex] += velocityY[vertex] * dt
             }
+
+            vertices[vertex * 2] = rest[vertex * 2] + displacementX[vertex]
+            vertices[vertex * 2 + 1] = rest[vertex * 2 + 1] + displacementY[vertex]
+            vertex++
         }
 
         canvas.drawBitmapMesh(bitmap, columns, rows, vertices, 0, null, 0, paint)
+    }
+
+    private fun rebuildInfluence(width: Int, height: Int, brushes: List<BrushRegion>) {
+        val minDimension = minOf(width, height).toFloat()
+        var vertex = 0
+        while (vertex < vertexCount) {
+            val px = rest[vertex * 2]
+            val py = rest[vertex * 2 + 1]
+            var combined = 0f
+
+            for (brush in brushes) {
+                val radius = (brush.radius * minDimension).coerceAtLeast(1f)
+                val dx = px - brush.x * width
+                val dy = py - brush.y * height
+                val normalized = sqrt(dx * dx + dy * dy) / radius
+                if (normalized < 2.2f) {
+                    val falloff = exp(-normalized * normalized * 1.65f)
+                    val weighted = (falloff * brush.strength).coerceIn(0f, 1f)
+                    combined = 1f - (1f - combined) * (1f - weighted)
+                }
+            }
+            influence[vertex] = combined
+            vertex++
+        }
     }
 }
