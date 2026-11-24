@@ -18,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
@@ -87,7 +88,7 @@ class MainActivity : ComponentActivity() {
         }) {
             bitmap?.let {
                 val scale = maxOf(size.width / it.width, size.height / it.height); val w = it.width * scale; val h = it.height * scale
-                drawImage(it, dstOffset = IntOffset(((size.width - w) / 2).toInt(), ((size.height - h) / 2).toInt()), dstSize = IntSize(w.toInt(), h.toInt()))
+                drawImage(it.asImageBitmap(), dstOffset = IntOffset(((size.width - w) / 2).toInt(), ((size.height - h) / 2).toInt()), dstSize = IntSize(w.toInt(), h.toInt()))
             }
             brushes.forEach { b -> drawCircle(Color(0xFFB8D8FF).copy(alpha = .75f), b.radius * size.minDimension, Offset(b.x * size.width, b.y * size.height), style = Stroke(2.dp.toPx())) }
         }
