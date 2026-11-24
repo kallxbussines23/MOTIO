@@ -20,6 +20,8 @@ class MotioWallpaperService : WallpaperService() {
         private var visible = false
         @Volatile private var tiltX = 0f
         @Volatile private var tiltY = 0f
+        @Volatile private var shakeX = 0f
+        @Volatile private var shakeY = 0f
         private val mesh = ElasticMesh(density = resources.displayMetrics.density)
         private var bitmap: Bitmap? = null
         private var config: MotioConfig = MotioConfig(null, emptyList())
@@ -28,7 +30,7 @@ class MotioWallpaperService : WallpaperService() {
         private val drawTask = object : Runnable {
             override fun run() {
                 drawFrame()
-                if (visible) handler.postDelayed(this, 33L)
+                if (visible) handler.postDelayed(this, 16L)
             }
         }
 
@@ -36,9 +38,11 @@ class MotioWallpaperService : WallpaperService() {
             super.onCreate(surfaceHolder)
             setTouchEventsEnabled(false)
             loadWallpaper()
-            tilt = TiltController(this@MotioWallpaperService) { x, y ->
+            tilt = TiltController(this@MotioWallpaperService) { x, y, sx, sy ->
                 tiltX = x
                 tiltY = y
+                shakeX = sx
+                shakeY = sy
             }
         }
 
@@ -52,7 +56,6 @@ class MotioWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(isVisible: Boolean) {
             visible = isVisible
             if (isVisible) {
-                // Reload in case the user changed the image/brushes before opening preview.
                 loadWallpaper()
                 tilt?.start()
                 handler.removeCallbacks(drawTask)
@@ -62,6 +65,8 @@ class MotioWallpaperService : WallpaperService() {
                 tilt?.stop()
                 tiltX = 0f
                 tiltY = 0f
+                shakeX = 0f
+                shakeY = 0f
             }
         }
 
@@ -80,7 +85,8 @@ class MotioWallpaperService : WallpaperService() {
                     if (image != null && !image.isRecycled) {
                         mesh.draw(
                             canvas, image, canvas.width, canvas.height,
-                            tiltX, tiltY, config.brushes, config.strength
+                            tiltX, tiltY, shakeX, shakeY,
+                            config.brushes, config.strength
                         )
                     }
                 }
