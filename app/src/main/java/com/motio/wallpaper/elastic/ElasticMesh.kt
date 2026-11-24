@@ -35,6 +35,30 @@ class ElasticMesh(
     private var rippleY = 0f
     private var rippleStartedNanos = 0L
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+    private var dragActive = false
+    private var dragStartX = 0f
+    private var dragStartY = 0f
+    private var dragOffsetX = 0f
+    private var dragOffsetY = 0f
+
+    fun beginDrag(x: Float, y: Float) {
+        dragStartX = x
+        dragStartY = y
+        dragOffsetX = 0f
+        dragOffsetY = 0f
+        dragActive = true
+    }
+
+    fun moveDrag(x: Float, y: Float) {
+        if (!dragActive) return
+        dragOffsetX = x - dragStartX
+        dragOffsetY = y - dragStartY
+    }
+
+    fun endDrag() {
+        // Returning the drag target to zero lets the spring create the rebound.
+        dragActive = false
+    }
 
     fun triggerRipple(x: Float, y: Float) {
         rippleX = x.coerceIn(0f, 1f)
@@ -43,6 +67,9 @@ class ElasticMesh(
     }
 
     fun reset() {
+        dragActive = false
+        dragOffsetX = 0f
+        dragOffsetY = 0f
         displacementX.fill(0f)
         displacementY.fill(0f)
         velocityX.fill(0f)
@@ -122,9 +149,18 @@ class ElasticMesh(
         var vertex = 0
         while (vertex < vertexCount) {
             val amount = influence[vertex]
-            val localLimit = maxTravel * amount * 1.22f
-            val targetX = (safeTiltX + safeShakeX * 0.78f) * maxTravel * amount
-            val targetY = (safeTiltY + safeShakeY * 0.78f) * maxTravel * amount
+            val localLimit = maxTravel * amount * 1.8f
+            val dragDistanceX = rest[vertex * 2] - dragStartX
+            val dragDistanceY = rest[vertex * 2 + 1] - dragStartY
+            val dragRadius = minOf(width, height) * 0.24f
+            val dragDistance = sqrt(dragDistanceX * dragDistanceX + dragDistanceY * dragDistanceY)
+            val dragFalloff = if (dragActive) exp(-(dragDistance / dragRadius) * (dragDistance / dragRadius) * 2.2f) else 0f
+            val dragWeight = amount * dragFalloff
+            val maxDragOffset = maxTravel * 1.05f
+            val boundedDragX = dragOffsetX.coerceIn(-maxDragOffset, maxDragOffset)
+            val boundedDragY = dragOffsetY.coerceIn(-maxDragOffset, maxDragOffset)
+            val targetX = (safeTiltX + safeShakeX * 0.78f) * maxTravel * amount + boundedDragX * dragWeight
+            val targetY = (safeTiltY + safeShakeY * 0.78f) * maxTravel * amount + boundedDragY * dragWeight
 
             repeat(steps) {
                 val forceX = (targetX - displacementX[vertex]) * stiffness -
