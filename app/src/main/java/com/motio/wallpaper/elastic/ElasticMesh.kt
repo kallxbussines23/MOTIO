@@ -256,26 +256,53 @@ class ElasticMesh(
     }
 
     private fun rebuildInfluence(width: Int, height: Int, brushes: List<BrushRegion>) {
-        val minDimension = minOf(width, height).toFloat()
-        var vertex = 0
-        while (vertex < vertexCount) {
-            val px = rest[vertex * 2]
-            val py = rest[vertex * 2 + 1]
-            var combined = 0f
+        influence.fill(0f)
+        if (brushes.isEmpty()) return
 
-            for (brush in brushes) {
-                val radius = (brush.radius * minDimension).coerceAtLeast(1f)
-                val dx = px - brush.x * width
-                val dy = py - brush.y * height
-                val normalized = sqrt(dx * dx + dy * dy) / radius
-                if (normalized < 2.2f) {
-                    val falloff = exp(-normalized * normalized * 1.45f)
-                    val weighted = (falloff * brush.strength).coerceIn(0f, 1f)
-                    combined = 1f - (1f - combined) * (1f - weighted)
+        // The mesh is a regular grid. Visit only vertices inside each brush's
+        // influence bounds instead of testing every brush against every vertex.
+        val left = rest[0]
+        val top = rest[1]
+        val right = rest[columns * 2]
+        val bottom = rest[rows * (columns + 1) * 2 + 1]
+        val stepX = ((right - left) / columns).coerceAtLeast(0.001f)
+        val stepY = ((bottom - top) / rows).coerceAtLeast(0.001f)
+        val minDimension = minOf(width, height).toFloat()
+        val maxNormalizedDistanceSquared = 2.2f * 2.2f
+        val rowStride = columns + 1
+
+        for (brush in brushes) {
+            val radius = (brush.radius * minDimension).coerceAtLeast(1f)
+            val radiusSquared = radius * radius
+            val reach = radius * 2.2f
+            val centerX = brush.x * width
+            val centerY = brush.y * height
+
+            val minGX = kotlin.math.floor((centerX - reach - left) / stepX)
+                .toInt().coerceIn(0, columns)
+            val maxGX = kotlin.math.ceil((centerX + reach - left) / stepX)
+                .toInt().coerceIn(0, columns)
+            val minGY = kotlin.math.floor((centerY - reach - top) / stepY)
+                .toInt().coerceIn(0, rows)
+            val maxGY = kotlin.math.ceil((centerY + reach - top) / stepY)
+                .toInt().coerceIn(0, rows)
+
+            for (gy in minGY..maxGY) {
+                val py = top + gy * stepY
+                val dy = py - centerY
+                val dySquared = dy * dy
+                for (gx in minGX..maxGX) {
+                    val px = left + gx * stepX
+                    val dx = px - centerX
+                    val normalizedDistanceSquared = (dx * dx + dySquared) / radiusSquared
+                    if (normalizedDistanceSquared < maxNormalizedDistanceSquared) {
+                        val falloff = exp(-normalizedDistanceSquared * 1.45f)
+                        val weighted = (falloff * brush.strength).coerceIn(0f, 1f)
+                        val vertex = gy * rowStride + gx
+                        influence[vertex] = 1f - (1f - influence[vertex]) * (1f - weighted)
+                    }
                 }
             }
-            influence[vertex] = combined
-            vertex++
         }
     }
 }
