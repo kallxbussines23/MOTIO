@@ -72,15 +72,24 @@ class MotioWallpaperService : WallpaperService() {
         }
 
         override fun onTouchEvent(event: MotionEvent) {
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                val width = surfaceHolder.surfaceFrame.width().coerceAtLeast(1)
-                val height = surfaceHolder.surfaceFrame.height().coerceAtLeast(1)
-                mesh.triggerRipple(event.x / width.toFloat(), event.y / height.toFloat())
-                // Redraw immediately so the ripple begins at the touch point.
-                if (visible) {
-                    handler.removeCallbacks(drawTask)
-                    handler.post(drawTask)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    mesh.beginDrag(event.x, event.y)
+                    val width = surfaceHolder.surfaceFrame.width().coerceAtLeast(1)
+                    val height = surfaceHolder.surfaceFrame.height().coerceAtLeast(1)
+                    mesh.triggerRipple(event.x / width.toFloat(), event.y / height.toFloat())
                 }
+                MotionEvent.ACTION_MOVE -> {
+                    mesh.moveDrag(event.x, event.y)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    mesh.endDrag()
+                }
+            }
+            // Keep the render loop alive while the finger is down and during rebound.
+            if (visible && event.actionMasked == MotionEvent.ACTION_DOWN) {
+                handler.removeCallbacks(drawTask)
+                handler.post(drawTask)
             }
             super.onTouchEvent(event)
         }
