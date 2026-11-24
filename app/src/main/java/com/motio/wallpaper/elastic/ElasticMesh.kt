@@ -186,7 +186,9 @@ class ElasticMesh(
             val normalizedDragDistance = sqrt(dx * dx + dy * dy) / dragRadius
             val dragFalloff = exp(-normalizedDragDistance * normalizedDragDistance * 2.2f)
             val brushWeight = amount * dragFalloff
-            val maxDragOffset = minOf(width, height) * 0.16f
+            // Keep drag displacement small relative to mesh-cell spacing so adjacent
+            // vertices cannot cross, fold, or visibly tear the picture.
+            val maxDragOffset = minOf(width, height) * 0.025f
             val directX: Float
             val directY: Float
             if (dragActive) {
