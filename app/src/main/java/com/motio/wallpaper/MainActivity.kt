@@ -33,6 +33,9 @@ import kotlinx.coroutines.launch
 import kotlin.math.hypot
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        private const val MAX_BRUSHES = 5_000
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { MotioApp() }
@@ -83,8 +86,12 @@ class MainActivity : ComponentActivity() {
                                 brushes = brushes,
                                 brushRadius = brushSize,
                                 onAddBrush = { point ->
-                                    brushes = (brushes + BrushRegion(point.x, point.y, brushSize, strength)).takeLast(600)
-                                    status = "${brushes.size} area kuas aktif."
+                                    if (brushes.size < MAX_BRUSHES) {
+                                        brushes = brushes + BrushRegion(point.x, point.y, brushSize, strength)
+                                        status = "${brushes.size}/${MAX_BRUSHES} area kuas aktif."
+                                    } else {
+                                        status = "Batas ${MAX_BRUSHES} brush tercapai."
+                                    }
                                 },
                                 onStrokeFinished = {
                                     MotioStore.save(context, MotioConfig(imagePath, brushes, brushSize, strength))
